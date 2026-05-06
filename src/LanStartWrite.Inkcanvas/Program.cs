@@ -16,6 +16,9 @@ internal static class Program
         // 全局主题键（静态）：暗色下 TextPrimary 为白，与浅色圆角批注栏不协调。
         ResourceDictionary.CurrentThemeKey = "Light";
 
+        // 降低 InkCanvas 最小点距（反射），减轻快速书写时的采样丢弃。
+        InkCanvasTuning.ApplyStartupDefaults();
+
         var app = new Application();
         var window = new AnnotationToolbarWindow();
         app.MainWindow = window;

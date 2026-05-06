@@ -9,16 +9,25 @@ public partial class AnnotationToolbarWindow : Window
 {
     private static readonly Brush TransparentBrush =
         new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
+    private static readonly Color PenBlack = Color.FromRgb(0x20, 0x20, 0x20);
+    private static readonly Color PenRed = Color.FromRgb(0xD1, 0x34, 0x38);
+    private static readonly Color PenBlue = Color.FromRgb(0x00, 0x78, 0xD4);
+    private static readonly Color PenGreen = Color.FromRgb(0x10, 0x7C, 0x10);
 
     private bool _toolSync;
     private AnnotationOverlayWindow? _annotationOverlay;
     private bool _annotationOverlayVisible;
     private SettingsWindow? _settingsWindow;
+    private PenSecondaryMenuWindow? _penMenuWindow;
+    private bool _penMenuVisible;
+    private Color _currentPenColor = PenBlack;
+    private double _currentPenThickness = 4;
+    private PenKind _currentPenKind = PenKind.Pen;
 
     /// <summary>由 .g.cs 装入的 <c>x:Name</c> 为 <see cref="Jalium.UI.FrameworkElement"/>，此处转为具体控件类型。</summary>
-    private AppBarToggleButton MouseTool => (AppBarToggleButton)MouseToolToggle!;
-    private AppBarToggleButton PenTool => (AppBarToggleButton)PenToolToggle!;
-    private AppBarToggleButton EraseTool => (AppBarToggleButton)EraseToolToggle!;
+    private RadioToolToggleButton MouseTool => (RadioToolToggleButton)MouseToolToggle!;
+    private RadioToolToggleButton PenTool => (RadioToolToggleButton)PenToolToggle!;
+    private RadioToolToggleButton EraseTool => (RadioToolToggleButton)EraseToolToggle!;
     private AppBarButton SettingsTool => (AppBarButton)SettingsToolbarButton!;
 
     public AnnotationToolbarWindow()
@@ -32,8 +41,12 @@ public partial class AnnotationToolbarWindow : Window
         WireTools();
         ApplyToolbarIcons();
         WireDragHandle();
+        WireSecondaryToolTriggers();
         Closed += (_, _) =>
         {
+            _penMenuWindow?.Close();
+            _penMenuWindow = null;
+            _penMenuVisible = false;
             _settingsWindow?.Close();
             _settingsWindow = null;
             DisposeAnnotationOverlay();
@@ -57,7 +70,7 @@ public partial class AnnotationToolbarWindow : Window
 
     private void OnToolToggleChecked(object sender, RoutedEventArgs e)
     {
-        if (_toolSync || sender is not AppBarToggleButton active || active.IsChecked != true)
+        if (_toolSync || sender is not RadioToolToggleButton active || active.IsChecked != true)
             return;
 
         _toolSync = true;
@@ -94,6 +107,7 @@ public partial class AnnotationToolbarWindow : Window
         {
             _annotationOverlay?.Hide();
             _annotationOverlayVisible = false;
+            HidePenSecondaryMenu();
             return;
         }
 
@@ -101,6 +115,9 @@ public partial class AnnotationToolbarWindow : Window
         {
             EnsureAnnotationOverlay();
             _annotationOverlay!.SetInkMode();
+            _annotationOverlay.SetPenKind(_currentPenKind);
+            _annotationOverlay.SetPenColor(_currentPenColor);
+            _annotationOverlay.SetPenThickness(_currentPenThickness);
             _annotationOverlay.Show();
             RaiseToolbarAboveAnnotationOverlay();
             _annotationOverlayVisible = true;
@@ -109,6 +126,7 @@ public partial class AnnotationToolbarWindow : Window
 
         if (EraseTool.IsChecked == true)
         {
+            HidePenSecondaryMenu();
             if (!_annotationOverlayVisible || _annotationOverlay is null)
                 return;
             _annotationOverlay.SetEraseMode();
@@ -128,10 +146,12 @@ public partial class AnnotationToolbarWindow : Window
             Topmost = false;
             Topmost = t;
             Activate();
+            if (_penMenuWindow is not null)
+                _penMenuWindow.Topmost = Topmost;
         });
     }
 
-    private IEnumerable<AppBarToggleButton> AllDrawingTools()
+    private IEnumerable<RadioToolToggleButton> AllDrawingTools()
     {
         yield return MouseTool;
         yield return PenTool;
@@ -164,6 +184,92 @@ public partial class AnnotationToolbarWindow : Window
         h.PreviewPointerDown += DragHandle_OnPreviewPointerDown;
     }
 
+    private void WireSecondaryToolTriggers()
+    {
+        PenTool.Reactivated += (_, _) => TogglePenSecondaryMenu();
+    }
+
+    private void EnsurePenSecondaryMenuWindow()
+    {
+        if (_penMenuWindow is not null)
+            return;
+
+        _penMenuWindow = new PenSecondaryMenuWindow();
+        _penMenuWindow.SetCurrentState(_currentPenColor, _currentPenThickness, _currentPenKind);
+        _penMenuWindow.PenColorChanged += c =>
+        {
+            _currentPenColor = c;
+            ApplyPenSettingsToOverlay();
+        };
+        _penMenuWindow.PenThicknessChanged += t =>
+        {
+            _currentPenThickness = t;
+            ApplyPenSettingsToOverlay();
+        };
+        _penMenuWindow.PenKindChanged += k =>
+        {
+            _currentPenKind = k;
+            ApplyPenSettingsToOverlay();
+        };
+        _penMenuWindow.Closed += (_, _) =>
+        {
+            _penMenuWindow = null;
+            _penMenuVisible = false;
+        };
+    }
+
+    private void PositionPenSecondaryMenu()
+    {
+        if (_penMenuWindow is null)
+            return;
+
+        _penMenuWindow.Left = Left + 4;
+        _penMenuWindow.Top = Top + Height + 2;
+        _penMenuWindow.Topmost = Topmost;
+    }
+
+    private void ShowPenSecondaryMenu()
+    {
+        if (PenTool.IsChecked != true)
+            return;
+
+        EnsurePenSecondaryMenuWindow();
+        _penMenuWindow!.SetCurrentState(_currentPenColor, _currentPenThickness, _currentPenKind);
+        PositionPenSecondaryMenu();
+        _penMenuWindow.Show();
+        _penMenuVisible = true;
+    }
+
+    private void HidePenSecondaryMenu()
+    {
+        _penMenuWindow?.Hide();
+        _penMenuVisible = false;
+    }
+
+    private void TogglePenSecondaryMenu()
+    {
+        if (PenTool.IsChecked != true)
+            return;
+
+        if (_penMenuWindow is not null && _penMenuVisible)
+        {
+            _penMenuWindow.Hide();
+            _penMenuVisible = false;
+            return;
+        }
+
+        ShowPenSecondaryMenu();
+    }
+
+    private void ApplyPenSettingsToOverlay()
+    {
+        if (_annotationOverlay is null)
+            return;
+        _annotationOverlay.SetPenKind(_currentPenKind);
+        _annotationOverlay.SetPenColor(_currentPenColor);
+        _annotationOverlay.SetPenThickness(_currentPenThickness);
+    }
+
     private void DragHandle_OnPreviewPointerDown(object sender, RoutedEventArgs e)
     {
         if (e is not PointerDownEventArgs p || sender is not FrameworkElement fe)
@@ -184,6 +290,7 @@ public partial class AnnotationToolbarWindow : Window
 
         p.Handled = true;
         DragMove();
+        PositionPenSecondaryMenu();
     }
 
     private void SettingsToolbarButton_OnClick(object sender, RoutedEventArgs e)
@@ -198,7 +305,23 @@ public partial class AnnotationToolbarWindow : Window
 
         var w = new SettingsWindow { Owner = this };
         _settingsWindow = w;
-        w.Closed += (_, _) => _settingsWindow = null;
+
+        var prevToolbarTopmost = Topmost;
+        Topmost = false;
+        if (_penMenuWindow is not null)
+            _penMenuWindow.Topmost = false;
+        _annotationOverlay?.Hide();
+
+        w.Closed += (_, _) =>
+        {
+            _settingsWindow = null;
+            Topmost = prevToolbarTopmost;
+            if (_penMenuWindow is not null)
+                _penMenuWindow.Topmost = prevToolbarTopmost;
+            SyncAnnotationOverlay();
+        };
+
         w.Show();
+        w.Activate();
     }
 }

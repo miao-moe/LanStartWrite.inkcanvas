@@ -31,6 +31,8 @@
                         Condition="$([System.String]::Copy('%(LogicalName)').EndsWith('AnnotationOverlayWindow.uic'))" />
       <EmbeddedResource Remove="@(EmbeddedResource)"
                         Condition="$([System.String]::Copy('%(LogicalName)').EndsWith('SettingsWindow.uic'))" />
+      <EmbeddedResource Remove="@(EmbeddedResource)"
+                        Condition="$([System.String]::Copy('%(LogicalName)').EndsWith('PenSecondaryMenuWindow.uic'))" />
     </ItemGroup>
   </Target>
 
