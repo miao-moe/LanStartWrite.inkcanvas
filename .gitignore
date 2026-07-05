@@ -2,3 +2,6 @@ bin/
 obj/
 artifacts/
 *.user
+
+# 本地构建脚本，不上传
+build.ps1
