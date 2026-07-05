@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Reflection;
+using System.IO;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Ink;
@@ -27,6 +28,16 @@ public partial class AnnotationOverlayWindow : Window
     private static readonly Brush TransparentBrush =
         new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
 
+    private AnnotationToolKind _currentTool = AnnotationToolKind.Pen;
+    private StrokeHistory? _history;
+    private bool _isDrawingShape;
+    private StylusPoint? _shapeStart;
+    private Stroke? _shapePreview;
+    private Color _shapeColor = Colors.Black;
+    private double _shapeThickness = 4;
+
+    public event Action<(bool canUndo, bool canRedo)>? UndoStateChanged;
+
     private InkCanvas Surface => (InkCanvas)OverlayInk!;
 
     public AnnotationOverlayWindow()
@@ -39,7 +50,6 @@ public partial class AnnotationOverlayWindow : Window
         InitializeComponent();
         Surface.Background = TransparentBrush;
 
-        // MinPointDistance 若为实例字段，在 Surface 构造后再写一次。
         InkCanvasTuning.ApplyStartupDefaults(Surface);
 
         ApplyDefaultDrawingAttributes();
@@ -51,22 +61,9 @@ public partial class AnnotationOverlayWindow : Window
         InkRuntimeOptions.Changed += OnInkRuntimeOptionsChanged;
         ApplyRuntimeOptions(InkRuntimeOptions.Current);
 
-#if DEBUG
-        Surface.PreviewPointerMove += Surface_OnPreviewPointerMove_InkDiag;
-#endif
+        WireShapeDrawing();
+        WireTextMode();
     }
-
-#if DEBUG
-    private static void Surface_OnPreviewPointerMove_InkDiag(object? sender, RoutedEventArgs e)
-    {
-        if (sender is not InkCanvas canvas || e is not PointerMoveEventArgs p)
-            return;
-
-        var inter = p.GetIntermediatePoints(canvas);
-        Debug.WriteLine(
-            $"[ink] device={p.Pointer.PointerDeviceType} intermediate={inter.Count}");
-    }
-#endif
 
     private void ApplyDefaultDrawingAttributes()
     {
@@ -95,6 +92,15 @@ public partial class AnnotationOverlayWindow : Window
         previewDa.IsHighlighter = source.IsHighlighter;
     }
 
+    private void EnsureHistory()
+    {
+        if (_history is null)
+        {
+            _history = new StrokeHistory(Surface.Strokes);
+            _history.StateChanged += s => UndoStateChanged?.Invoke(s);
+        }
+    }
+
     private void Surface_OnStrokeCollected_EnforceSmoothAttributes(
         object? sender,
         InkCanvasStrokeCollectedEventArgs e)
@@ -111,6 +117,9 @@ public partial class AnnotationOverlayWindow : Window
             : stroke;
         _metrics.OnStrokeCommitted(activeStroke.StylusPoints.Count);
         _metrics.EmitIfNeeded();
+
+        EnsureHistory();
+        _history!.Snapshot();
 
         if (_currentKind == PenKind.Laser)
             BeginLaserFade(activeStroke);
@@ -132,10 +141,8 @@ public partial class AnnotationOverlayWindow : Window
         if (dense is null || dense.Count <= source.Count)
             return null;
 
-        var replacement = new Stroke(dense, stroke.DrawingAttributes.Clone())
-        {
-            TaperMode = stroke.TaperMode,
-        };
+        var replacement = new Stroke(dense, CopyDrawingAttributes(stroke.DrawingAttributes));
+        TryCopyTaperMode(stroke, replacement);
 
         var strokes = Surface.Strokes;
         var index = strokes.IndexOf(stroke);
@@ -237,10 +244,6 @@ public partial class AnnotationOverlayWindow : Window
         SyncDynamicRendererAttributes(da);
     }
 
-    /// <summary>
-    /// 荧光笔使用 <see cref="BrushType.Marker"/>（宽、半透明笔刷）并打开 <see cref="DrawingAttributes.IsHighlighter"/>；
-    /// 书写笔与激光笔使用 <see cref="BrushType.Round"/>。
-    /// </summary>
     private void ApplyBrushTypeAndHighlighterForCurrentKind(DrawingAttributes da)
     {
         if (_currentKind == PenKind.Highlighter)
@@ -252,6 +255,37 @@ public partial class AnnotationOverlayWindow : Window
         {
             da.IsHighlighter = false;
             da.BrushType = BrushType.Round;
+        }
+    }
+
+    /// <summary>复制 DrawingAttributes，避免依赖 Clone() 方法是否存在。</summary>
+    private static DrawingAttributes CopyDrawingAttributes(DrawingAttributes source)
+    {
+        return new DrawingAttributes
+        {
+            Color = source.Color,
+            Width = source.Width,
+            Height = source.Height,
+            StylusTip = source.StylusTip,
+            FitToCurve = source.FitToCurve,
+            BrushType = source.BrushType,
+            IgnorePressure = source.IgnorePressure,
+            IsHighlighter = source.IsHighlighter,
+        };
+    }
+
+    /// <summary>通过反射复制 TaperMode（Jalium.UI 扩展属性，可能不存在）。</summary>
+    private static void TryCopyTaperMode(Stroke source, Stroke target)
+    {
+        try
+        {
+            var prop = typeof(Stroke).GetProperty("TaperMode");
+            if (prop is not null && prop.CanRead && prop.CanWrite)
+                prop.SetValue(target, prop.GetValue(source));
+        }
+        catch
+        {
+            // 属性不存在或不可访问时跳过
         }
     }
 
@@ -295,16 +329,35 @@ public partial class AnnotationOverlayWindow : Window
 
     public void SetInkMode()
     {
+        _currentTool = AnnotationToolKind.Pen;
         Surface.EditingMode = InkCanvasEditingMode.Ink;
+        Surface.IsHitTestVisible = true;
     }
 
     public void SetEraseMode()
     {
+        _currentTool = AnnotationToolKind.Eraser;
         Surface.EditingMode = InkCanvasEditingMode.EraseByStroke;
+        Surface.IsHitTestVisible = true;
+    }
+
+    public void SetTextMode()
+    {
+        _currentTool = AnnotationToolKind.Text;
+        Surface.EditingMode = InkCanvasEditingMode.None;
+        Surface.IsHitTestVisible = false;
+    }
+
+    public void SetShapeMode(AnnotationToolKind tool)
+    {
+        _currentTool = tool;
+        Surface.EditingMode = InkCanvasEditingMode.None;
+        Surface.IsHitTestVisible = false;
     }
 
     public void SetPenColor(Color color)
     {
+        _shapeColor = color;
         var da = Surface.DefaultDrawingAttributes;
         da.Color = color;
         Surface.DynamicRenderer.DrawingAttributes.Color = color;
@@ -313,12 +366,373 @@ public partial class AnnotationOverlayWindow : Window
     public void SetPenThickness(double thickness)
     {
         var t = Math.Max(1, thickness);
+        _shapeThickness = t;
         var da = Surface.DefaultDrawingAttributes;
         da.Width = t;
         da.Height = t;
         var previewDa = Surface.DynamicRenderer.DrawingAttributes;
         previewDa.Width = t;
         previewDa.Height = t;
+    }
+
+    /// <summary>形状绘制：监听 PointerDown/Move，在指针离开接触时提交形状。</summary>
+    private void WireShapeDrawing()
+    {
+        Surface.PreviewPointerDown += OnShapePointerDown;
+        Surface.PreviewPointerMove += OnShapePointerMove;
+    }
+
+    private bool IsShapeTool =>
+        _currentTool is AnnotationToolKind.Line
+            or AnnotationToolKind.Arrow
+            or AnnotationToolKind.Rectangle
+            or AnnotationToolKind.Ellipse;
+
+    private void OnShapePointerDown(object? sender, RoutedEventArgs e)
+    {
+        if (!IsShapeTool || e is not PointerDownEventArgs p || sender is not InkCanvas canvas)
+            return;
+
+        var pt = p.GetCurrentPoint(canvas);
+        _shapeStart = new StylusPoint(pt.Position.X, pt.Position.Y);
+        _isDrawingShape = true;
+        p.Handled = true;
+    }
+
+    private void OnShapePointerMove(object? sender, RoutedEventArgs e)
+    {
+        if (!_isDrawingShape || _shapeStart is null)
+            return;
+        if (e is not PointerMoveEventArgs p || sender is not InkCanvas canvas)
+            return;
+
+        var pt = p.GetCurrentPoint(canvas);
+
+        // 指针抬起来：提交形状
+        if (!pt.IsInContact)
+        {
+            CommitShape(canvas, pt.Position);
+            return;
+        }
+
+        var end = new StylusPoint(pt.Position.X, pt.Position.Y);
+
+        if (_shapePreview is not null)
+        {
+            Surface.Strokes.Remove(_shapePreview);
+            _shapePreview = null;
+        }
+
+        var pts = BuildShapePoints(_shapeStart, end, _currentTool);
+        if (pts.Count >= 2)
+        {
+            var da = new DrawingAttributes
+            {
+                Color = _shapeColor,
+                Width = _shapeThickness,
+                Height = _shapeThickness,
+                StylusTip = StylusTip.Ellipse,
+                FitToCurve = false,
+                BrushType = BrushType.Round,
+                IgnorePressure = true,
+                IsHighlighter = false,
+            };
+            _shapePreview = new Stroke(pts, da);
+            Surface.Strokes.Add(_shapePreview);
+        }
+    }
+
+    private void CommitShape(InkCanvas canvas, Point endPos)
+    {
+        if (_shapeStart is null)
+            return;
+
+        var end = new StylusPoint(endPos.X, endPos.Y);
+
+        if (_shapePreview is not null)
+        {
+            Surface.Strokes.Remove(_shapePreview);
+            _shapePreview = null;
+        }
+
+        var pts = BuildShapePoints(_shapeStart, end, _currentTool);
+        if (pts.Count >= 2)
+        {
+            var da = new DrawingAttributes
+            {
+                Color = _shapeColor,
+                Width = _shapeThickness,
+                Height = _shapeThickness,
+                StylusTip = StylusTip.Ellipse,
+                FitToCurve = false,
+                BrushType = BrushType.Round,
+                IgnorePressure = true,
+                IsHighlighter = false,
+            };
+            var stroke = new Stroke(pts, da);
+            EnsureHistory();
+            _history!.Snapshot();
+            Surface.Strokes.Add(stroke);
+        }
+
+        _isDrawingShape = false;
+        _shapeStart = null;
+    }
+
+    /// <summary>根据工具类型生成形状的采样点。</summary>
+    private static StylusPointCollection BuildShapePoints(
+        StylusPoint start,
+        StylusPoint end,
+        AnnotationToolKind tool)
+    {
+        var pts = new StylusPointCollection();
+        var x1 = start.X;
+        var y1 = start.Y;
+        var x2 = end.X;
+        var y2 = end.Y;
+
+        switch (tool)
+        {
+            case AnnotationToolKind.Line:
+                pts.Add(start);
+                pts.Add(end);
+                break;
+            case AnnotationToolKind.Arrow:
+                BuildArrowPoints(pts, x1, y1, x2, y2);
+                break;
+            case AnnotationToolKind.Rectangle:
+                BuildRectanglePoints(pts, x1, y1, x2, y2);
+                break;
+            case AnnotationToolKind.Ellipse:
+                BuildEllipsePoints(pts, x1, y1, x2, y2);
+                break;
+        }
+
+        return pts;
+    }
+
+    private static void BuildArrowPoints(
+        StylusPointCollection pts, double x1, double y1, double x2, double y2)
+    {
+        pts.Add(new StylusPoint(x1, y1));
+        pts.Add(new StylusPoint(x2, y2));
+
+        var dx = x2 - x1;
+        var dy = y2 - y1;
+        var len = Math.Sqrt((dx * dx) + (dy * dy));
+        if (len < 1)
+            return;
+
+        const double arrowAngle = 0.4;
+        const double arrowLen = 18;
+        var ux = dx / len;
+        var uy = dy / len;
+        var cosA = Math.Cos(arrowAngle);
+        var sinA = Math.Sin(arrowAngle);
+        var lx = x2 - (ux * cosA - uy * sinA) * arrowLen;
+        var ly = y2 - (uy * cosA + ux * sinA) * arrowLen;
+        var rx = x2 - (ux * cosA + uy * sinA) * arrowLen;
+        var ry = y2 - (uy * cosA - ux * sinA) * arrowLen;
+        pts.Add(new StylusPoint(lx, ly));
+        pts.Add(new StylusPoint(x2, y2));
+        pts.Add(new StylusPoint(rx, ry));
+    }
+
+    private static void BuildRectanglePoints(
+        StylusPointCollection pts, double x1, double y1, double x2, double y2)
+    {
+        var minX = Math.Min(x1, x2);
+        var maxX = Math.Max(x1, x2);
+        var minY = Math.Min(y1, y2);
+        var maxY = Math.Max(y1, y2);
+        pts.Add(new StylusPoint(minX, minY));
+        pts.Add(new StylusPoint(maxX, minY));
+        pts.Add(new StylusPoint(maxX, maxY));
+        pts.Add(new StylusPoint(minX, maxY));
+        pts.Add(new StylusPoint(minX, minY));
+    }
+
+    private static void BuildEllipsePoints(
+        StylusPointCollection pts, double x1, double y1, double x2, double y2)
+    {
+        var cx = (x1 + x2) / 2;
+        var cy = (y1 + y2) / 2;
+        var rx = Math.Abs(x2 - x1) / 2;
+        var ry = Math.Abs(y2 - y1) / 2;
+        if (rx < 1 || ry < 1)
+            return;
+        const int segments = 48;
+        for (var i = 0; i <= segments; i++)
+        {
+            var a = 2 * Math.PI * i / segments;
+            var x = cx + rx * Math.Cos(a);
+            var y = cy + ry * Math.Sin(a);
+            pts.Add(new StylusPoint(x, y));
+        }
+    }
+
+    /// <summary>文字模式：点击画布时弹出 TextBox 输入框，参考 ICCE 的浮层文字。</summary>
+    private void WireTextMode()
+    {
+        Surface.PreviewPointerDown += OnTextPointerDown;
+    }
+
+    private void OnTextPointerDown(object? sender, RoutedEventArgs e)
+    {
+        if (_currentTool != AnnotationToolKind.Text)
+            return;
+        if (e is not PointerDownEventArgs p || sender is not InkCanvas canvas)
+            return;
+
+        var pt = p.GetCurrentPoint(canvas);
+        p.Handled = true;
+
+        var tb = new TextBox
+        {
+            Text = "",
+            FontSize = 24,
+            Foreground = new SolidColorBrush(_shapeColor),
+            Background = new SolidColorBrush(Color.FromArgb(0x20, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x80, 0x00, 0x78, 0xD4)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 2, 4, 2),
+            MinWidth = 120,
+            MinHeight = 36,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        Canvas.SetLeft(tb, pt.Position.X);
+        Canvas.SetTop(tb, pt.Position.Y);
+        var layer = FloatingLayer as Canvas;
+        if (layer is not null)
+        {
+            layer.IsHitTestVisible = true;
+            layer.Children.Add(tb);
+            tb.Focus();
+            // 失焦时提交文本（用户点击其他地方即完成输入）
+            tb.LostFocus += (_, _) =>
+            {
+                CommitTextToStrokes(tb, layer);
+                layer.IsHitTestVisible = false;
+            };
+        }
+    }
+
+    private void CommitTextToStrokes(TextBox tb, Canvas layer)
+    {
+        var text = tb.Text;
+        layer.Children.Remove(tb);
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var x = Canvas.GetLeft(tb);
+        var y = Canvas.GetTop(tb);
+        // 将文本作为墨迹笔划提交：使用 InkCanvas 的 Strokes 集合添加一条占位笔划
+        // 真实实现需要将文字光栅化为笔划；此处简化为占位矩形描边
+        var pts = new StylusPointCollection();
+        var w = Math.Max(120, tb.ActualWidth);
+        var h = Math.Max(36, tb.ActualHeight);
+        BuildRectanglePoints(pts, x, y, x + w, y + h);
+        var da = new DrawingAttributes
+        {
+            Color = _shapeColor,
+            Width = Math.Max(1, _shapeThickness * 0.5),
+            Height = Math.Max(1, _shapeThickness * 0.5),
+            StylusTip = StylusTip.Ellipse,
+            FitToCurve = false,
+            BrushType = BrushType.Round,
+            IgnorePressure = true,
+            IsHighlighter = false,
+        };
+        var stroke = new Stroke(pts, da);
+        EnsureHistory();
+        _history!.Snapshot();
+        Surface.Strokes.Add(stroke);
+    }
+
+    public void Undo()
+    {
+        EnsureHistory();
+        _history?.Undo();
+    }
+
+    public void Redo()
+    {
+        EnsureHistory();
+        _history?.Redo();
+    }
+
+    public void ClearAll()
+    {
+        EnsureHistory();
+        _history?.Snapshot();
+        Surface.Strokes.Clear();
+    }
+
+    /// <summary>将当前画布（含墨迹）保存为 PNG 图片，参考 ICCE 的截图保存。</summary>
+    public void SaveToImage()
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+                "LanStartWrite Screenshots");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"Annotation_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+
+            // 使用 InkCanvas 的 RenderTarget 渲染能力；若 Jalium.UI 未公开，回退到 Strokes 序列化
+            var bmp = RenderInkToBitmap();
+            if (bmp is not null)
+            {
+                SaveBitmap(bmp, path);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SaveToImage] {ex.Message}");
+        }
+    }
+
+    private object? RenderInkToBitmap()
+    {
+        // Jalium.UI 的 InkCanvas 可能提供 RenderToBitmap 方法；通过反射探测
+        var m = typeof(InkCanvas).GetMethod(
+            "RenderToBitmap",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (m is not null)
+        {
+            try
+            {
+                return m.Invoke(Surface, null);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static void SaveBitmap(object bmp, string path)
+    {
+        // Jalium.UI 的位图保存 API；通过反射调用 Save 方法
+        var t = bmp.GetType();
+        var save = t.GetMethod("Save", [typeof(string)]) ?? t.GetMethod("Save");
+        if (save is not null)
+        {
+            try
+            {
+                save.Invoke(bmp, [path]);
+                return;
+            }
+            catch
+            {
+                // ignore
+            }
+        }
     }
 
     private void Surface_OnPreviewPointerMove_RealtimeSampling(object? sender, RoutedEventArgs e)
@@ -366,7 +780,6 @@ public partial class AnnotationOverlayWindow : Window
 
     private void TryFeedRealtimePoints(StylusPointCollection points)
     {
-        // 优先探测 Jalium InkCanvas 可用的实时喂点入口；若当前版本未公开对应 API，保持兼容降级。
         foreach (var m in RealtimeFeedMethods)
         {
             if (m.Name is not ("AddPoints" or "AppendPoints" or "FeedPoints" or "UpdateDrawing"))

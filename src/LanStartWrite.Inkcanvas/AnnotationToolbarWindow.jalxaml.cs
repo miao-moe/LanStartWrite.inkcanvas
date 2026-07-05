@@ -236,8 +236,8 @@ public partial class AnnotationToolbarWindow : Window
         TextTool.Icon = new SymbolIcon(Symbol.Font) { Foreground = iconFg };
         ArrowTool.Icon = new SymbolIcon(Symbol.ArrowUpRight) { Foreground = iconFg };
         LineTool.Icon = new SymbolIcon(Symbol.Sort) { Foreground = iconFg };
-        RectangleTool.Icon = new SymbolIcon(Symbol.RectangleShape) { Foreground = iconFg };
-        EllipseTool.Icon = new SymbolIcon(Symbol.CircleShape) { Foreground = iconFg };
+        RectangleTool.Icon = new SymbolIcon(Symbol.Rectangle) { Foreground = iconFg };
+        EllipseTool.Icon = new SymbolIcon(Symbol.Circle) { Foreground = iconFg };
         UndoBtn.Icon = new SymbolIcon(Symbol.Undo) { Foreground = iconFg };
         RedoBtn.Icon = new SymbolIcon(Symbol.Redo) { Foreground = iconFg };
         ClearBtn.Icon = new SymbolIcon(Symbol.Delete) { Foreground = iconFg };

@@ -16,7 +16,12 @@
         AllowsTransparency="True"
         SystemBackdrop="None"
         ResizeMode="NoResize">
-    <InkCanvas x:Name="OverlayInk"
-               HorizontalAlignment="Stretch"
-               VerticalAlignment="Stretch"/>
+    <Grid>
+        <InkCanvas x:Name="OverlayInk"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Stretch"/>
+        <Canvas x:Name="FloatingLayer"
+                IsHitTestVisible="False"
+                Background="Transparent"/>
+    </Grid>
 </Window>
