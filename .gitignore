@@ -2,3 +2,4 @@ bin/
 obj/
 artifacts/
 *.user
+build.ps1
