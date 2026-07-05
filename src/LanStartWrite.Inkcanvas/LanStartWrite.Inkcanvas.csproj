@@ -7,9 +7,10 @@
     <OutputType>WinExe</OutputType>
     <LangVersion>preview</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- 多目标：Windows（主）、macOS、Linux（后两者为开发测试环境构建） -->
+    <TargetFrameworks>net10.0-windows;net10.0;net10.0-macos</TargetFrameworks>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationManifest Condition="'$(TargetFramework)' == 'net10.0-windows'">app.manifest</ApplicationManifest>
     <RestoreEnablePackagePruning>false</RestoreEnablePackagePruning>
 
     <DebugType Condition="'$(Configuration)' == 'Debug'">portable</DebugType>
@@ -18,6 +19,13 @@
     <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
 
+  <!--
+    平台条件编译：
+    - net10.0-windows：Windows 主平台，使用 Jalium.UI 完整包（含 DirectX 12 原生库）
+    - net10.0：Linux，使用 Jalium.UI（Vulkan 后端）
+    - net10.0-macos：macOS，使用 Jalium.UI（Metal 后端）
+    macOS/Linux 为开发测试环境构建，不保证正常使用。
+  -->
   <ItemGroup>
     <PackageReference Include="Jalium.UI" Version="26.10.2" />
   </ItemGroup>
