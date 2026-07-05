@@ -22,12 +22,23 @@ public partial class AnnotationToolbarWindow : Window
     private bool _penMenuVisible;
     private Color _currentPenColor = PenBlack;
     private double _currentPenThickness = 4;
-    private PenKind _currentPenKind = PenKind.Pen;
+    private AnnotationToolKind _currentTool = AnnotationToolKind.Mouse;
 
-    /// <summary>由 .g.cs 装入的 <c>x:Name</c> 为 <see cref="Jalium.UI.FrameworkElement"/>，此处转为具体控件类型。</summary>
     private RadioToolToggleButton MouseTool => (RadioToolToggleButton)MouseToolToggle!;
     private RadioToolToggleButton PenTool => (RadioToolToggleButton)PenToolToggle!;
+    private RadioToolToggleButton HighlighterTool => (RadioToolToggleButton)HighlighterToolToggle!;
+    private RadioToolToggleButton LaserTool => (RadioToolToggleButton)LaserToolToggle!;
     private RadioToolToggleButton EraseTool => (RadioToolToggleButton)EraseToolToggle!;
+    private RadioToolToggleButton TextTool => (RadioToolToggleButton)TextToolToggle!;
+    private RadioToolToggleButton ArrowTool => (RadioToolToggleButton)ArrowToolToggle!;
+    private RadioToolToggleButton LineTool => (RadioToolToggleButton)LineToolToggle!;
+    private RadioToolToggleButton RectangleTool => (RadioToolToggleButton)RectangleToolToggle!;
+    private RadioToolToggleButton EllipseTool => (RadioToolToggleButton)EllipseToolToggle!;
+    private AppBarButton UndoBtn => (AppBarButton)UndoButton!;
+    private AppBarButton RedoBtn => (AppBarButton)RedoButton!;
+    private AppBarButton ClearBtn => (AppBarButton)ClearButton!;
+    private AppBarButton SaveBtn => (AppBarButton)SaveButton!;
+    private AppBarButton MinimizeBtn => (AppBarButton)MinimizeButton!;
     private AppBarButton SettingsTool => (AppBarButton)SettingsToolbarButton!;
 
     public AnnotationToolbarWindow()
@@ -55,17 +66,14 @@ public partial class AnnotationToolbarWindow : Window
 
         _toolSync = true;
         MouseTool.IsChecked = true;
-        PenTool.IsChecked = false;
-        EraseTool.IsChecked = false;
         _toolSync = false;
         SyncAnnotationOverlay();
     }
 
     private void WireTools()
     {
-        MouseTool.Checked += OnToolToggleChecked;
-        PenTool.Checked += OnToolToggleChecked;
-        EraseTool.Checked += OnToolToggleChecked;
+        foreach (var t in AllRadioTools())
+            t.Checked += OnToolToggleChecked;
     }
 
     private void OnToolToggleChecked(object sender, RoutedEventArgs e)
@@ -76,7 +84,7 @@ public partial class AnnotationToolbarWindow : Window
         _toolSync = true;
         try
         {
-            foreach (var t in AllDrawingTools())
+            foreach (var t in AllRadioTools())
                 t.IsChecked = ReferenceEquals(t, active);
         }
         finally
@@ -84,26 +92,86 @@ public partial class AnnotationToolbarWindow : Window
             _toolSync = false;
         }
 
+        _currentTool = GetToolKindFromButton(active);
         SyncAnnotationOverlay();
+
+        if (_currentTool is AnnotationToolKind.Pen or AnnotationToolKind.Highlighter or AnnotationToolKind.Laser)
+        {
+            var penKind = _currentTool switch
+            {
+                AnnotationToolKind.Highlighter => PenKind.Highlighter,
+                AnnotationToolKind.Laser => PenKind.Laser,
+                _ => PenKind.Pen,
+            };
+            EnsureAnnotationOverlay();
+            _annotationOverlay!.SetPenKind(penKind);
+        }
+
+        if (_currentTool is not AnnotationToolKind.Pen
+            and not AnnotationToolKind.Highlighter
+            and not AnnotationToolKind.Laser)
+        {
+            HidePenSecondaryMenu();
+        }
+    }
+
+    private AnnotationToolKind GetToolKindFromButton(RadioToolToggleButton btn)
+    {
+        if (ReferenceEquals(btn, MouseTool)) return AnnotationToolKind.Mouse;
+        if (ReferenceEquals(btn, PenTool)) return AnnotationToolKind.Pen;
+        if (ReferenceEquals(btn, HighlighterTool)) return AnnotationToolKind.Highlighter;
+        if (ReferenceEquals(btn, LaserTool)) return AnnotationToolKind.Laser;
+        if (ReferenceEquals(btn, EraseTool)) return AnnotationToolKind.Eraser;
+        if (ReferenceEquals(btn, TextTool)) return AnnotationToolKind.Text;
+        if (ReferenceEquals(btn, ArrowTool)) return AnnotationToolKind.Arrow;
+        if (ReferenceEquals(btn, LineTool)) return AnnotationToolKind.Line;
+        if (ReferenceEquals(btn, RectangleTool)) return AnnotationToolKind.Rectangle;
+        if (ReferenceEquals(btn, EllipseTool)) return AnnotationToolKind.Ellipse;
+        return AnnotationToolKind.Mouse;
+    }
+
+    private IEnumerable<RadioToolToggleButton> AllRadioTools()
+    {
+        yield return MouseTool;
+        yield return PenTool;
+        yield return HighlighterTool;
+        yield return LaserTool;
+        yield return EraseTool;
+        yield return TextTool;
+        yield return ArrowTool;
+        yield return LineTool;
+        yield return RectangleTool;
+        yield return EllipseTool;
     }
 
     private void EnsureAnnotationOverlay()
     {
-        _annotationOverlay ??= new AnnotationOverlayWindow();
+        if (_annotationOverlay is not null) return;
+        _annotationOverlay = new AnnotationOverlayWindow();
+        _annotationOverlay.UndoStateChanged += OnUndoStateChanged;
     }
 
     private void DisposeAnnotationOverlay()
     {
         if (_annotationOverlay is null)
             return;
+        _annotationOverlay.UndoStateChanged -= OnUndoStateChanged;
         _annotationOverlay.Close();
         _annotationOverlay = null;
     }
 
-    /// <summary>「鼠标」收起透明画布；「笔」显示并墨迹；「橡皮」仅在画布当前处于打开状态时切换擦除模式。</summary>
+    private void OnUndoStateChanged((bool canUndo, bool canRedo) state)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            UndoBtn.IsEnabled = state.canUndo;
+            RedoBtn.IsEnabled = state.canRedo;
+        });
+    }
+
     private void SyncAnnotationOverlay()
     {
-        if (MouseTool.IsChecked == true)
+        if (_currentTool == AnnotationToolKind.Mouse)
         {
             _annotationOverlay?.Hide();
             _annotationOverlayVisible = false;
@@ -111,33 +179,39 @@ public partial class AnnotationToolbarWindow : Window
             return;
         }
 
-        if (PenTool.IsChecked == true)
+        EnsureAnnotationOverlay();
+        var overlay = _annotationOverlay!;
+
+        switch (_currentTool)
         {
-            EnsureAnnotationOverlay();
-            _annotationOverlay!.SetInkMode();
-            _annotationOverlay.SetPenKind(_currentPenKind);
-            _annotationOverlay.SetPenColor(_currentPenColor);
-            _annotationOverlay.SetPenThickness(_currentPenThickness);
-            _annotationOverlay.Show();
-            RaiseToolbarAboveAnnotationOverlay();
-            _annotationOverlayVisible = true;
-            return;
+            case AnnotationToolKind.Pen:
+            case AnnotationToolKind.Highlighter:
+            case AnnotationToolKind.Laser:
+                overlay.SetInkMode();
+                overlay.SetPenColor(_currentPenColor);
+                overlay.SetPenThickness(_currentPenThickness);
+                break;
+            case AnnotationToolKind.Eraser:
+                overlay.SetEraseMode();
+                break;
+            case AnnotationToolKind.Text:
+                overlay.SetTextMode();
+                break;
+            case AnnotationToolKind.Arrow:
+            case AnnotationToolKind.Line:
+            case AnnotationToolKind.Rectangle:
+            case AnnotationToolKind.Ellipse:
+                overlay.SetShapeMode(_currentTool);
+                overlay.SetPenColor(_currentPenColor);
+                overlay.SetPenThickness(_currentPenThickness);
+                break;
         }
 
-        if (EraseTool.IsChecked == true)
-        {
-            HidePenSecondaryMenu();
-            if (!_annotationOverlayVisible || _annotationOverlay is null)
-                return;
-            _annotationOverlay.SetEraseMode();
-            _annotationOverlay.Show();
-            RaiseToolbarAboveAnnotationOverlay();
-        }
+        overlay.Show();
+        RaiseToolbarAboveAnnotationOverlay();
+        _annotationOverlayVisible = true;
     }
 
-    /// <summary>
-    /// 全屏画布 Show 后会参与 Z 序与前台；刷新批注栏 Topmost 并激活批注栏，避免被盖住或失去「总在最前」。
-    /// </summary>
     private void RaiseToolbarAboveAnnotationOverlay()
     {
         Dispatcher.BeginInvoke(() =>
@@ -151,20 +225,24 @@ public partial class AnnotationToolbarWindow : Window
         });
     }
 
-    private IEnumerable<RadioToolToggleButton> AllDrawingTools()
-    {
-        yield return MouseTool;
-        yield return PenTool;
-        yield return EraseTool;
-    }
-
-    /// <summary>使用 Jalium 自带的 <see cref="SymbolIcon"/> + <see cref="Symbol"/>（Segoe Fluent Icons 码位由框架维护）。</summary>
     private void ApplyToolbarIcons()
     {
         var iconFg = new SolidColorBrush(Color.FromRgb(0x24, 0x24, 0x24));
         MouseTool.Icon = new SymbolIcon(Symbol.TouchPointer) { Foreground = iconFg };
         PenTool.Icon = new SymbolIcon(Symbol.InkingTool) { Foreground = iconFg };
+        HighlighterTool.Icon = new SymbolIcon(Symbol.Highlight) { Foreground = iconFg };
+        LaserTool.Icon = new SymbolIcon(Symbol.Pointer) { Foreground = iconFg };
         EraseTool.Icon = new SymbolIcon(Symbol.EraseTool) { Foreground = iconFg };
+        TextTool.Icon = new SymbolIcon(Symbol.Font) { Foreground = iconFg };
+        ArrowTool.Icon = new SymbolIcon(Symbol.ArrowUpRight) { Foreground = iconFg };
+        LineTool.Icon = new SymbolIcon(Symbol.Sort) { Foreground = iconFg };
+        RectangleTool.Icon = new SymbolIcon(Symbol.RectangleShape) { Foreground = iconFg };
+        EllipseTool.Icon = new SymbolIcon(Symbol.CircleShape) { Foreground = iconFg };
+        UndoBtn.Icon = new SymbolIcon(Symbol.Undo) { Foreground = iconFg };
+        RedoBtn.Icon = new SymbolIcon(Symbol.Redo) { Foreground = iconFg };
+        ClearBtn.Icon = new SymbolIcon(Symbol.Delete) { Foreground = iconFg };
+        SaveBtn.Icon = new SymbolIcon(Symbol.Save) { Foreground = iconFg };
+        MinimizeBtn.Icon = new SymbolIcon(Symbol.Remove) { Foreground = iconFg };
         SettingsTool.Icon = new SymbolIcon(Symbol.Settings) { Foreground = iconFg };
         var grip = new SymbolIcon(Symbol.GripperBarVertical)
         {
@@ -187,6 +265,8 @@ public partial class AnnotationToolbarWindow : Window
     private void WireSecondaryToolTriggers()
     {
         PenTool.Reactivated += (_, _) => TogglePenSecondaryMenu();
+        HighlighterTool.Reactivated += (_, _) => TogglePenSecondaryMenu();
+        LaserTool.Reactivated += (_, _) => TogglePenSecondaryMenu();
     }
 
     private void EnsurePenSecondaryMenuWindow()
@@ -195,7 +275,13 @@ public partial class AnnotationToolbarWindow : Window
             return;
 
         _penMenuWindow = new PenSecondaryMenuWindow();
-        _penMenuWindow.SetCurrentState(_currentPenColor, _currentPenThickness, _currentPenKind);
+        var penKind = _currentTool switch
+        {
+            AnnotationToolKind.Highlighter => PenKind.Highlighter,
+            AnnotationToolKind.Laser => PenKind.Laser,
+            _ => PenKind.Pen,
+        };
+        _penMenuWindow.SetCurrentState(_currentPenColor, _currentPenThickness, penKind);
         _penMenuWindow.PenColorChanged += c =>
         {
             _currentPenColor = c;
@@ -208,14 +294,38 @@ public partial class AnnotationToolbarWindow : Window
         };
         _penMenuWindow.PenKindChanged += k =>
         {
-            _currentPenKind = k;
-            ApplyPenSettingsToOverlay();
+            EnsureAnnotationOverlay();
+            _annotationOverlay!.SetPenKind(k);
+            SwitchToPenKindTool(k);
         };
         _penMenuWindow.Closed += (_, _) =>
         {
             _penMenuWindow = null;
             _penMenuVisible = false;
         };
+    }
+
+    private void SwitchToPenKindTool(PenKind kind)
+    {
+        _toolSync = true;
+        try
+        {
+            foreach (var t in AllRadioTools())
+                t.IsChecked = false;
+            var target = kind switch
+            {
+                PenKind.Highlighter => HighlighterTool,
+                PenKind.Laser => LaserTool,
+                _ => PenTool,
+            };
+            target.IsChecked = true;
+            _currentTool = GetToolKindFromButton(target);
+        }
+        finally
+        {
+            _toolSync = false;
+        }
+        SyncAnnotationOverlay();
     }
 
     private void PositionPenSecondaryMenu()
@@ -230,11 +340,19 @@ public partial class AnnotationToolbarWindow : Window
 
     private void ShowPenSecondaryMenu()
     {
-        if (PenTool.IsChecked != true)
+        if (_currentTool is not AnnotationToolKind.Pen
+            and not AnnotationToolKind.Highlighter
+            and not AnnotationToolKind.Laser)
             return;
 
         EnsurePenSecondaryMenuWindow();
-        _penMenuWindow!.SetCurrentState(_currentPenColor, _currentPenThickness, _currentPenKind);
+        var penKind = _currentTool switch
+        {
+            AnnotationToolKind.Highlighter => PenKind.Highlighter,
+            AnnotationToolKind.Laser => PenKind.Laser,
+            _ => PenKind.Pen,
+        };
+        _penMenuWindow!.SetCurrentState(_currentPenColor, _currentPenThickness, penKind);
         PositionPenSecondaryMenu();
         _penMenuWindow.Show();
         _penMenuVisible = true;
@@ -248,7 +366,9 @@ public partial class AnnotationToolbarWindow : Window
 
     private void TogglePenSecondaryMenu()
     {
-        if (PenTool.IsChecked != true)
+        if (_currentTool is not AnnotationToolKind.Pen
+            and not AnnotationToolKind.Highlighter
+            and not AnnotationToolKind.Laser)
             return;
 
         if (_penMenuWindow is not null && _penMenuVisible)
@@ -265,7 +385,6 @@ public partial class AnnotationToolbarWindow : Window
     {
         if (_annotationOverlay is null)
             return;
-        _annotationOverlay.SetPenKind(_currentPenKind);
         _annotationOverlay.SetPenColor(_currentPenColor);
         _annotationOverlay.SetPenThickness(_currentPenThickness);
     }
@@ -293,6 +412,41 @@ public partial class AnnotationToolbarWindow : Window
         PositionPenSecondaryMenu();
     }
 
+    private void UndoButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        _annotationOverlay?.Undo();
+    }
+
+    private void RedoButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        _annotationOverlay?.Redo();
+    }
+
+    private void ClearButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        _annotationOverlay?.ClearAll();
+    }
+
+    private void SaveButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        _annotationOverlay?.SaveToImage();
+    }
+
+    private void MinimizeButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        WindowState = WindowState.Minimized;
+    }
+
     private void SettingsToolbarButton_OnClick(object sender, RoutedEventArgs e)
     {
         _ = sender;
@@ -311,7 +465,6 @@ public partial class AnnotationToolbarWindow : Window
         if (_penMenuWindow is not null)
             _penMenuWindow.Topmost = false;
         HidePenSecondaryMenu();
-        // 设置页期间彻底关闭全屏透明画布，避免透明窗口/置顶状态拦截输入。
         DisposeAnnotationOverlay();
         _annotationOverlayVisible = false;
 
